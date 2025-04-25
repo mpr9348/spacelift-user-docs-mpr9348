@@ -1,170 +1,165 @@
-# Login policy
+# Login Policy
 
 ## Purpose
 
 !!! info
-    Please note, we currently don't support importing rego.v1
+    Please note, we currently do not support importing `rego.v1`.
 
-Login policies can allow users to log in to the account, and optionally give them admin privileges, too. Unlike all other policy types, login policies are global and can't be attached to individual stacks. They take effect immediately once they're created and affect all future login attempts.
+Login policies govern user authentication to the account and optionally grant administrative privileges. Unlike other policy types, login policies are global; they cannot be attached to individual stacks. They take effect immediately upon creation and impact all future login attempts.
 
 !!! info
-    API Keys are essentially virtual users so they get evaluated with login policy except for ones in the "root" space set with admin key.
+    API Keys are evaluated against login policies similarly to virtual users, except for those in the "root" space assigned with an admin key.
 
 !!! warning
-    Login policies don't affect GitHub organization or [SSO](../../integrations/single-sign-on/README.md) admins and private account owners who always get admin access to their respective Spacelift accounts. This is to avoid a situation where a bad login policy locks out everyone from the account.
+    Login policies do not affect GitHub organization administrators, Single Sign-On ([SSO](../../integrations/single-sign-on/README.md)) administrators, or private account owners. These users retain administrative access to their respective Spacelift accounts to prevent a lockout scenario caused by incorrect login policy configuration.
 
 !!! danger
-    Any change made (create, update or delete) to a login policy will invalidate all active sessions, except the session making the change.
+    Any change (creation, update, or deletion) to a login policy invalidates all active sessions, except for the session initiating the change.
 
-A login policy can define the following types of boolean rules:
+A login policy can define the following boolean rule types:
 
-- **allow** - allows the user to log in as a _non-admin_;
-- **admin** - allows the user to log in as an account-wide _admin_ - note that you don't need to explicitly **allow** admin users;
-- **deny** - denies login attempt, no matter the result of other (**allow** and **admin**) rules;
-- **deny_admin** - denies the current user **admin** access to the stack, no matter the outcome of other rules;
-- **space_admin/space_write/space_read** - manages access levels to spaces. More on that in [Spaces Access Control](../spaces/access-control.md);
+- **allow**: Permits the user to log in as a non-administrator.
+- **admin**: Grants the user account-wide administrator access (an explicit **allow** is not required).
+- **deny**: Denies the login attempt, overriding any other rules.
+- **deny_admin**: Denies administrative access, regardless of other rule outcomes.
+- **space_admin / space_write / space_read**: Assigns access levels to spaces (see [Spaces Access Control](../spaces/access-control.md)).
 
-If no rules match, the default action will be to deny a login attempt.
+If no rules match, login attempts are denied by default.
 
-Note that giving folks admin access is a big thing. Admins can do pretty much everything in Spacelift - create and delete stacks, trigger runs or tasks, create, delete and attach contexts and policies, etc. Instead, you can give users limited admin access using the **space_admin** rule.
+Granting administrative access is a significant action, as administrators can perform critical tasks such as creating or deleting stacks, triggering runs, and managing contexts and policies. To limit elevated access, consider using the **space_admin** rule instead of full administrative rights.
 
 !!! danger
-    In practice, any time you define an **allow** or **admin** rule, you should probably think of restricting access using a **deny** rule, too. Please see the examples below to get a better feeling for it.
+    Whenever defining an **allow** or **admin** rule, it is recommended to also implement corresponding **deny** rules to ensure security. Please refer to the examples below for guidance.
 
-## Data input
+## Data Input
 
-This is the schema of the data input that each policy request will receive:
+Each policy receives the following input schema:
 
 ```json
 {
   "request": {
-    "remote_ip": "string - IP of the user trying to log in",
-    "timestamp_ns": "number - current Unix timestamp in nanoseconds"
+    "remote_ip": "string - IP address of the user attempting login",
+    "timestamp_ns": "number - Current Unix timestamp in nanoseconds"
   },
   "session": {
-    "creator_ip": "string - IP address of the user who created the session",
-    "login": "string - username of the user trying to log in",
-    "member": "boolean - is the user a member of the account",
-    "name": "string - full name of the user trying to log in - may be empty",
-    "teams": ["string - names of teams the user is a member of"]
+    "creator_ip": "string - IP address of the session creator",
+    "login": "string - Username of the user attempting login",
+    "member": "boolean - Indicates if the user is a member of the account",
+    "name": "string - Full name of the user (may be empty)",
+    "teams": ["string - Names of teams the user belongs to"]
   },
   "spaces": [
     {
-      "id": "string - ID of the space",
-      "name": "string - name of the space",
-      "labels": ["string - label of the space"]
+      "id": "string - Space ID",
+      "name": "string - Space name",
+      "labels": ["string - Space labels"]
     }
   ]
 }
 ```
 
 !!! tip
-    OPA string comparisons are case-sensitive so make sure to use the proper case, as defined in your Identity Provider when comparing values.
+    OPA string comparisons are case-sensitive. Ensure values are case-matched according to your Identity Provider (IdP). You may [enable sampling](./README.md#sampling-policy-inputs) to view exact values passed by the IdP.
 
-    It might be helpful to [enable sampling on the policy](./README.md#sampling-policy-inputs) to see the exact values passed by the Identity Provider.
+Two fields in the session object require additional explanation: _member_ and _teams_.
 
-Two fields in the session object may require further explanation: _member_ and _teams_.
+### Account Membership
 
-### Account membership
+When a user first logs into Spacelift, GitHub is used as the identity provider. The username (login) is especially important. Each Spacelift account is linked to a single GitHub account. Thus, when logging into a Spacelift account, membership verification occurs:
 
-When you first log in to Spacelift, we use GitHub as the identity provider and thus we're able to get some of your details from there with username (login) being the most important one. However, each Spacelift account is linked to one and only one GitHub account. Thus, when you log in to a Spacelift account, we're checking if you're a member of that GitHub account.
+- **Organization Accounts**: If the GitHub account is an organization, Spacelift verifies organizational membership. If confirmed, the `member` field is set to `true`; otherwise, it is `false`.
+- **Private Accounts**: Private accounts can have only one member. If the user's login matches the linked GitHub account name, `member` is `true`; otherwise, it is `false`.
 
-When that GitHub account is an organization, we can explicitly query for your organization membership. If you're a member, you get the member field set to _true_. If you're not - it's _false_. For private accounts it's different - they can only have one member, so the check is even simpler - if your login is the same as the name of the linked GitHub account, you get the member field set to _true_. If it isn't - it's _false_.
-
-When using Single Sign-On with SAML, every successful login attempt will necessarily require that the _member_ field is set to _true -_ if the linked IdP could verify you, you **must** be a member.
-
-!!! warning
-    Watch this field very closely - it may be _very_ useful for your **deny** rules.
-
-#### Teams
-
-When using the default identity provider (GitHub), Teams are only queried for organization accounts - if you're a member of the GitHub organization linked to a Spacelift account, Spacelift will query GitHub API for the full list of teams you're a member of. This list will be available in the `session.teams` field. For private accounts and non-members, this list will be empty.
-
-Note that Spacelift treats GitHub team membership as transitive - for example let's assume Charlie is a member of the _Badass_ team, which is a child of team _Awesome_. Charlie's list of teams includes both _Awesome_ and _Badass_, even though he's not a **direct** member of the team _Awesome_.
-
-For Single Sign-On, the list of teams is pretty much arbitrary and depends on how the SAML assertion attribute is mapped to your user record on the IdP end. Please see the [relevant article](../../integrations/single-sign-on/README.md#setting-up-the-integration) for more details.
+When using SAML-based Single Sign-On, successful login attempts require that the `member` field be set to `true`.
 
 !!! warning
-    Watch this field very closely - it may be _very_ useful for your **allow** and **admin** rules.
+    The `member` field is critical and should be carefully considered when implementing **deny** rules.
+
+### Teams
+
+When using GitHub as the identity provider, team membership is queried for organization accounts only. Spacelift retrieves the full list of GitHub teams the user belongs to, stored in the `session.teams` field. For private accounts and non-members, this list is empty.
+
+Spacelift treats GitHub team membership as transitive: if Charlie is a member of the _Badass_ team, which is a child of the _Awesome_ team, Charlie's team list includes both _Badass_ and _Awesome_.
+
+For SAML-based SSO, team information depends on how attributes are mapped by the IdP. See the [Single Sign-On integration documentation](../../integrations/single-sign-on/README.md#setting-up-the-integration) for more details.
+
+!!! warning
+    Team information is especially valuable for configuring **allow** and **admin** rules.
 
 ## Examples
 
 !!! tip
-    We maintain a [library of example policies](https://github.com/spacelift-io/spacelift-policies-example-library/tree/main/examples/login){: rel="nofollow"} that are ready to use or that you could tweak to meet your specific needs.
+    Explore our [example policy library](https://github.com/spacelift-io/spacelift-policies-example-library/tree/main/examples/login){: rel="nofollow"} for ready-to-use policies. If further assistance is needed, [contact our support team](../../product/support/README.md#contact-support).
 
-    If you cannot find what you are looking for below or in the library, please reach out to [our support](../../product/support/README.md#contact-support) and we will craft a policy to do exactly what you need.
+!!! note
+    We recommend defining a single login policy, as merging multiple policies can lead to unexpected results.
 
-    We recommend having only one login policy as what sounds reasonable within a policy may not yield the expected results when the decisions are merged.
+Login policies can support three primary use cases: granting access to internal users, managing access for external contributors, and restricting access under specific conditions.
 
-There are three possible use cases for login policies - granting access to folks in your org who would otherwise not have it, managing access for external contributors or restricting access to specific circumstances. Let's look into these use cases one by one.
+### Managing Access Levels Within an Organization
 
-### Managing access levels within an organization
-
-In high-security environments where the principle of least access is applied, it's quite possible that nobody on the infra team gets admin access to _GitHub_. Still, it would be pretty useful for those people to be in charge of your _Spacelift_ account. Let's create a login policy that will allow every member of the DevOps team to get admin access, and everyone in Engineering to get regular access - we'll give them more granular access to individual stacks later using [stack access policies](stack-access-policy.md). While at it, let's also explicitly deny access to all non-members just to be on the safe side.
+In high-security environments, users may lack GitHub administrative rights but still require administrative access to Spacelift. The following policy grants DevOps team members admin rights, Engineering team members regular access, and denies access to all others:
 
 ```opa
 package spacelift
 
 teams := input.session.teams
 
-# Make sure to use the GitHub team names, not IDs (e.g., "Example Team" not "example-team")
-# and to omit the GitHub organization name
 admin { teams[_] == "DevOps" }
 allow { teams[_] == "Engineering" }
 deny  { not input.session.member }
 ```
 
-Here's a [minimal example to play with](https://play.openpolicyagent.org/p/LpzDekpDOU){: rel="nofollow"}.
+[Minimal example available here](https://play.openpolicyagent.org/p/LpzDekpDOU){: rel="nofollow"}.
 
-This is also important for Single Sign-On integrations: only the [integration creator](../../integrations/single-sign-on/README.md#setting-up-the-integration) gets administrative permissions by default, so all other administrators must be granted their access using a login policy.
+For SSO integrations, only the integration creator has administrative access by default. Other administrators must be granted access via a login policy.
 
-### Granting access to external contributors
+### Granting Access to External Contributors
 
 !!! danger
-    This feature is not available when using [Single Sign-On](../../integrations/single-sign-on/README.md) - your identity provider **must** be able to successfully validate each user trying to log in to Spacelift.
+    This capability is unavailable when using Single Sign-On ([SSO](../../integrations/single-sign-on/README.md)). The IdP must verify each login attempt.
 
-Sometimes you have folks (short-term consultants, most likely) who are not members of your organization but need access to your Spacelift account - either as regular members or perhaps even as admins. There's also the situation where a bunch of friends is working on a hobby project in a personal GitHub account and they could use access to Spacelift. Here are examples of a policy that allows a bunch of whitelisted folks to get regular access and one to get admin privileges:
+External users such as consultants may require access to Spacelift. Below are two examples:
 
 === "GitHub"
 
-    This example uses GitHub usernames to grant access to Spacelift.
+Using GitHub usernames:
 
-    ```opa
-    package spacelift
+```opa
+package spacelift
 
-    admins  := { "alice" }
-    allowed := { "bob", "charlie", "danny" }
-    login   := input.session.login
+admins  := { "alice" }
+allowed := { "bob", "charlie", "danny" }
+login   := input.session.login
 
-    admin { admins[login] }
-    allow { allowed[login] }
-    deny  { not admins[login]; not allowed[login] }
-    ```
+admin { admins[login] }
+allow { allowed[login] }
+deny  { not admins[login]; not allowed[login] }
+```
 
-    Here's a [minimal example to play with](https://play.openpolicyagent.org/p/ZsOJayumFw){: rel="nofollow"}.
+[Minimal example here](https://play.openpolicyagent.org/p/ZsOJayumFw){: rel="nofollow"}.
 
 === "Google"
-    This example uses email addresses managed by Google to grant access to Spacelift.
 
-    ```rego
-    package spacelift
+Using Google-managed email addresses:
 
-    admins  := { "alice@example.com" }
-    login   := input.session.login
+```rego
+package spacelift
 
-    admin { admins[login] }
-    allow { endswith(input.session.login, "@example.com") }
-    deny  { not admins[login]; not allow }
-    ```
+admins  := { "alice@example.com" }
+login   := input.session.login
+
+admin { admins[login] }
+allow { endswith(login, "@example.com") }
+deny  { not admins[login]; not allow }
+```
 
 !!! warning
-    Note that granting access to individuals is less safe than granting access to teams and restricting access to account members. In the latter case, when they lose access to your GitHub org, they automatically lose access to Spacelift. But when whitelisting individuals and not restricting access to members only, you'll need to remember to explicitly remove them from your Spacelift login policy, too.
+    Whitelisting individuals is less secure than using teams and member validation. Revocation of GitHub organization access automatically removes access for team-based users but not for whitelisted individuals.
 
-### Restricting access to specific circumstances
+### Restricting Access to Specific Circumstances
 
-Stable and secure infrastructure is crucial to your business continuity. And all changes to your infrastructure carry some risk, so you may want to somehow restrict access to it. The example below is pretty extreme but it shows a very comprehensive policy where you restrict Spacelift access to users logging in from the office IP during business hours. You may want to use elements of this policy to create your own - less draconian - version, or keep it this way to support everyone's work-life balance.
-
-Note that this example only defines deny rules so you'll likely want to add some allow and admin rules, too - either in this policy or in a separate one.
+The following example restricts Spacelift access to users logging in from a designated office IP address during business hours:
 
 ```opa
 package spacelift
@@ -181,19 +176,18 @@ deny { clock[0] > 17 }
 deny { not net.cidr_contains("12.34.56.0/24", ip) }
 ```
 
-There's a lot to digest here, so a [playground example](https://play.openpolicyagent.org/p/4J3Nz6pYgC){: rel="nofollow"} may be helpful.
+[Playground example available here](https://play.openpolicyagent.org/p/4J3Nz6pYgC){: rel="nofollow"}.
 
-### Granting limited admin access
+!!! note
+    Only **deny** rules are shown. **Allow** and **admin** rules should also be included.
 
-Very often you'd like to give a user admin access limited to a certain set of resources, so that they can manage them without having access to all other resources in that account. You can find more on that use case in [Spaces](../spaces/README.md).
+### Granting Limited Admin Access
 
-### Rewriting teams
+To grant limited administrative access to specific resources, refer to [Spaces](../spaces/README.md).
 
-In addition to boolean rules regulating access to your Spacelift account, the login policy exposes the **team** rule, which allows one to dynamically rewrite the list of teams received from the identity provider. This operation allows one to define Spacelift roles independent of the identity provider. To illustrate this use case, let's imagine you want to define a `Superwriter` role for someone who's:
+### Rewriting Teams
 
-- logging in from an office VPN;
-- is a member of the DevOps team, as defined by your IdP;
-- is not a member of the Contractors team, as defined by your IdP;
+The **team** rule allows rewriting the list of teams received from the IdP to define Spacelift-specific roles. Example:
 
 ```opa
 package spacelift
@@ -206,18 +200,16 @@ team["Superwriter"] {
 
 contractor { input.session.teams[_] == "Contractors" }
 devops     { input.session.teams[_] == "DevOps" }
-office_vpn { net.cidr_contains("12.34.56.0/24", input.request.remote_ip)  }
+office_vpn { net.cidr_contains("12.34.56.0/24", input.request.remote_ip) }
 ```
 
-What's important here is that the **team** rule overwrites the original list of teams, meaning that if it evaluates to a non-empty collection, it will **replace** the original list of teams in the session. In the above example, the `Superwriter` role will become the only team for the evaluated user session.
+This approach **overwrites** the original list of teams.
 
-If the above is not what you want, and you still would like to retain the original list of teams, you can modify the above example the following way:
+To **preserve** existing teams and add new ones:
 
 ```opa
 package spacelift
 
-# This rule will copy each of the existing teams to the
-# new modified list.
 team[name] { name := input.session.teams[_] }
 
 team["Superwriter"] {
@@ -228,17 +220,17 @@ team["Superwriter"] {
 
 contractor { input.session.teams[_] == "Contractors" }
 devops     { input.session.teams[_] == "DevOps" }
-office_vpn { net.cidr_contains("12.34.56.0/24", input.request.remote_ip)  }
+office_vpn { net.cidr_contains("12.34.56.0/24", input.request.remote_ip) }
 ```
 
-A playground example of the above is available [here](https://play.openpolicyagent.org/p/dM8P83sk4l){: rel="nofollow"}.
+[Playground example available here](https://play.openpolicyagent.org/p/dM8P83sk4l){: rel="nofollow"}.
 
 !!! hint
-    Because the user session is updated, the rewritten teams are available in the data input provided to the policy types that receive user information. For example, the rewritten teams can be used in [Access policies](./stack-access-policy.md).
+    Rewritten teams will be reflected in user data for other policy types, such as [Access Policies](./stack-access-policy.md).
 
-## Default login policy
+## Default Login Policy
 
-If no login policies are defined on the account, Spacelift behaves as if it had this policy:
+If no login policies are defined, Spacelift applies the following default policy:
 
 ```opa
 package spacelift
